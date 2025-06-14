@@ -7,7 +7,7 @@ const dotenv = require('dotenv'); // Make sure you have dotenv installed for env
 dotenv.config();
 
 const app = express();
-const port = process.env.PORT || 3000; // Use port from environment variable or default to 3000
+const port = process.env.PORT || 3001; // Use port from environment variable or default to 3000
 
 // Middleware to parse JSON request bodies
 app.use(express.json());
