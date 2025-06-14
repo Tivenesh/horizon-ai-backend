@@ -1,0 +1,26 @@
+{"level":"info","message":"Node.js server listening on http://localhost:3001","timestamp":"2025-06-13T23:58:27.273Z"}
+{"level":"info","message":"Gemini requested function call:","timestamp":"2025-06-13T23:58:50.116Z"}
+{"level":"info","message":"[ElevenLabs] Generating audio for text: \"Hello! How can I help you today?\n...\"","timestamp":"2025-06-13T23:58:50.118Z"}
+{"level":"info","message":"[ElevenLabs] Audio generated successfully.","timestamp":"2025-06-13T23:58:51.356Z"}
+{"level":"info","message":"Gemini requested function call:","timestamp":"2025-06-13T23:59:19.383Z"}
+{"level":"info","message":"[ElevenLabs] Generating audio for text: \"...\"","timestamp":"2025-06-13T23:59:19.384Z"}
+{"level":"info","message":"[ElevenLabs] Audio generated successfully.","timestamp":"2025-06-13T23:59:20.197Z"}
+{"level":"info","message":"Gemini requested function call:","timestamp":"2025-06-13T23:59:47.300Z"}
+{"level":"info","message":"[ElevenLabs] Generating audio for text: \"What happened in what context?  Please provide mor...\"","timestamp":"2025-06-13T23:59:47.300Z"}
+{"level":"info","message":"[ElevenLabs] Audio generated successfully.","timestamp":"2025-06-13T23:59:48.520Z"}
+{"level":"info","message":"Gemini requested function call:","timestamp":"2025-06-13T23:59:57.221Z"}
+{"level":"info","message":"[ElevenLabs] Generating audio for text: \"...\"","timestamp":"2025-06-13T23:59:57.222Z"}
+{"level":"info","message":"[ElevenLabs] Audio generated successfully.","timestamp":"2025-06-13T23:59:58.021Z"}
+{"level":"info","message":"Gemini requested function call:","timestamp":"2025-06-14T00:00:28.821Z"}
+{"level":"info","message":"[ElevenLabs] Generating audio for text: \"...\"","timestamp":"2025-06-14T00:00:28.821Z"}
+{"level":"info","message":"[ElevenLabs] Audio generated successfully.","timestamp":"2025-06-14T00:00:29.542Z"}
+{"level":"info","message":"Node.js server listening on http://localhost:3001","timestamp":"2025-06-14T00:00:40.972Z"}
+{"level":"info","message":"Node.js server listening on http://localhost:3001","timestamp":"2025-06-14T00:04:57.798Z"}
+{"level":"info","message":"[API - /analyze] Processing query: \"hello\"","timestamp":"2025-06-14T00:05:18.820Z"}
+{"level":"error","message":"[API - /analyze] Unhandled error during AI analysis: [GoogleGenerativeAI Error]: Error fetching from https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash-latest:generateContent: [400 Bad Request] * GenerateContentRequest.tools[4].function_declarations[0].parameters.properties[startDate].format: only 'enum' and 'date-time' are supported for STRING type\n* GenerateContentRequest.tools[4].function_declarations[0].parameters.properties[endDate].format: only 'enum' and 'date-time' are supported for STRING type\n","stack":"Error: [GoogleGenerativeAI Error]: Error fetching from https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash-latest:generateContent: [400 Bad Request] * GenerateContentRequest.tools[4].function_declarations[0].parameters.properties[startDate].format: only 'enum' and 'date-time' are supported for STRING type\n* GenerateContentRequest.tools[4].function_declarations[0].parameters.properties[endDate].format: only 'enum' and 'date-time' are supported for STRING type\n\n    at handleResponseNotOk (D:\\Users\\tiven\\OneDrive\\Desktop\\add\\horizon-ai-backend\\node_modules\\@google\\generative-ai\\dist\\index.js:434:11)\n    at process.processTicksAndRejections (node:internal/process/task_queues:105:5)\n    at async makeRequest (D:\\Users\\tiven\\OneDrive\\Desktop\\add\\horizon-ai-backend\\node_modules\\@google\\generative-ai\\dist\\index.js:403:9)\n    at async generateContent (D:\\Users\\tiven\\OneDrive\\Desktop\\add\\horizon-ai-backend\\node_modules\\@google\\generative-ai\\dist\\index.js:867:22)\n    at async ChatSession.sendMessage (D:\\Users\\tiven\\OneDrive\\Desktop\\add\\horizon-ai-backend\\node_modules\\@google\\generative-ai\\dist\\index.js:1210:9)\n    at async D:\\Users\\tiven\\OneDrive\\Desktop\\add\\horizon-ai-backend\\index.js:701:24","status":400,"statusText":"Bad Request","timestamp":"2025-06-14T00:05:20.458Z"}
+{"level":"info","message":"Node.js server listening on http://localhost:3001","timestamp":"2025-06-14T00:06:33.723Z"}
+{"level":"info","message":"Node.js server listening on http://localhost:3001","timestamp":"2025-06-14T00:06:49.487Z"}
+{"level":"info","message":"Node.js server listening on http://localhost:3001","timestamp":"2025-06-14T00:07:23.670Z"}
+{"level":"info","message":"[API - /analyze] Processing query: \"hello\"","timestamp":"2025-06-14T00:07:34.672Z"}
+{"level":"info","message":"[Gemini] Requested function call:  with args:","timestamp":"2025-06-14T00:07:38.778Z"}
+{"level":"warn","message":"[Gemini] Unknown function call requested: ","timestamp":"2025-06-14T00:07:38.779Z"}
