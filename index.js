@@ -3,132 +3,60 @@
 // --- Imports ---
 const express = require('express');
 const cors = require('cors');
-const dotenv = require('dotenv'); // Explicitly import dotenv for config()
+require('dotenv').config(); // Loads environment variables from .env file
 const { GoogleGenerativeAI } = require('@google/generative-ai');
-const axios = require('axios');
-const multer = require('multer');
-const rateLimit = require('express-rate-limit');
-const NodeCache = require('node-cache'); // For caching API responses
-const Joi = require('joi'); // For input validation
-const winston = require('winston'); // For structured logging
+const axios = require('axios'); // For making HTTP requests to external APIs
+const multer = require('multer'); // For handling file uploads (OCR)
 
-// --- Load Environment Variables ---
-dotenv.config(); // <<< CRITICAL: This loads your .env file into process.env
 
 // --- Express App Setup ---
 const app = express();
-const PORT = process.env.PORT || 3001;
+const PORT = process.env.PORT || 3001; // Backend will run on port 3001
 
-// --- Logger Setup ---
-const logger = winston.createLogger({
-    level: 'info',
-    format: winston.format.combine(
-        winston.format.timestamp(),
-        winston.format.json()
-    ),
-    transports: [
-        new winston.transports.File({ filename: 'error.log', level: 'error' }),
-        new winston.transports.File({ filename: 'combined.log' }),
-        new winston.transports.Console({
-            format: winston.format.combine(
-                winston.format.colorize(),
-                winston.format.simple()
-            )
-        })
-    ]
-});
-
-// --- Cache Setup ---
-const cache = new NodeCache({ stdTTL: 3600, checkperiod: 600 }); // Cache for 1 hour (3600 seconds)
-
-// --- Middleware ---
+// IMPORTANT: CORS Middleware - allows our Next.js frontend to talk to this backend
 app.use(cors({
-    origin: 'http://localhost:3000' // Adjust to your frontend URL
+    origin: 'http://localhost:3000' // This must match your Next.js frontend's URL
 }));
-app.use(express.json());
-
-// Rate limiting: 100 requests per 15 minutes per IP
-const limiter = rateLimit({
-    windowMs: 15 * 60 * 1000, // 15 minutes
-    max: 100, // limit each IP to 100 requests per windowMs
-    message: { error: 'Too many requests from this IP, please try again after 15 minutes.' }
-});
-app.use(limiter);
-
-// --- Input Validation Schemas (Joi) ---
-const analyzeSchema = Joi.object({
-    query: Joi.string().trim().min(1).required()
-});
-
-const economicDataQuerySchema = Joi.object({
-    indicatorCode: Joi.string().valid('CPI', 'PPI', 'FOMC', 'interest_rate', 'GDP').required(),
-    countryCode: Joi.string().default('united states'),
-    startDate: Joi.date().iso().optional(), // Joi uses 'iso' for ISO 8601 date strings
-    endDate: Joi.date().iso().optional()
-});
-
-const ocrSchema = Joi.object({}); // No body validation for file upload, handled by multer
+app.use(express.json()); // Enable parsing of JSON request bodies
 
 
 // --- Initialize Generative AI ---
-// Ensure GEMINI_API_KEY is loaded correctly by dotenv.config()
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
 const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash-latest" });
 
 
-// --- Helper Functions (All Defined Here) ---
+// --- Helper Functions (Data Fetching & Generative AI - DEFINED FIRST!) ---
 
 async function fetchNews(keyword) {
     const GNEWS_API_KEY = process.env.GNEWS_API_KEY;
-    if (!GNEWS_API_KEY) {
-        logger.error('[News API] GNEWS_API_KEY is not set.');
-        return { error: 'GNews API key not found.', text: 'I cannot fetch news as the API key is not configured.' };
-    }
-
     const url = `https://gnews.io/api/v4/search?q=${encodeURIComponent(keyword)}&lang=en&country=us&max=5&token=${GNEWS_API_KEY}`;
-    logger.info(`[News API] Fetching news for: "${keyword}"`);
+    console.log(`[News API] Fetching news for: ${keyword}`);
 
     try {
         const response = await axios.get(url);
-        if (response.data.articles && response.data.articles.length > 0) {
-            const articles = response.data.articles.map(article => ({
-                title: article.title,
-                description: article.description,
-                url: article.url,
-                image: article.image || null,
-                publishedAt: article.publishedAt || new Date().toISOString(),
-                source: {
-                    name: article.source?.name || 'Unknown',
-                    url: article.source?.url || '#'
-                }
-            }));
-            logger.info(`[News API] Fetched ${articles.length} articles for "${keyword}".`);
-            return { articles: articles, text: `Here are some recent news articles about ${keyword}:\n\n` + articles.map(a => `- ${a.title}: ${a.url}`).join('\n') };
-        } else {
-            logger.warn(`[News API] No articles found for "${keyword}". Response:`, response.data);
-            return { error: `No news articles found for "${keyword}".`, text: `I couldn't find any recent news articles for "${keyword}".` };
-        }
+        const articles = response.data.articles.map(article => ({
+            title: article.title,
+            description: article.description,
+            url: article.url
+        }));
+        console.log(`[News API] Fetched ${articles.length} articles.`);
+        return { articles: articles }; // Return a structured object
     } catch (error) {
-        logger.error(`[News API] Error fetching news for "${keyword}":`, error.message);
-        return { error: `Failed to fetch news for "${keyword}".`, text: `I encountered an issue fetching news for "${keyword}".` };
+        console.error('[News API] Error fetching news:', error.message);
+        return { error: 'Failed to fetch news data.' };
     }
 }
 
 async function getStockData(ticker) {
     const ALPHA_VANTAGE_API_KEY = process.env.ALPHA_VANTAGE_API_KEY;
-    if (!ALPHA_VANTAGE_API_KEY) {
-        logger.error('[Stock API] ALPHA_VANTAGE_API_KEY is not set.');
-        return { error: 'Alpha Vantage API key not found.', text: 'I cannot fetch stock data as the API key is not configured.' };
-    }
-
     const url = `https://www.alphavantage.co/query?function=GLOBAL_QUOTE&symbol=${encodeURIComponent(ticker)}&apikey=${ALPHA_VANTAGE_API_KEY}`;
-    logger.info(`[Stock API] Fetching live stock data for: "${ticker}"`);
+    console.log(`[Stock API] Fetching stock data for: ${ticker}`);
 
     try {
         const response = await axios.get(url);
         const data = response.data["Global Quote"];
 
-        if (data && Object.keys(data).length > 0 && data["01. symbol"]) {
+        if (data && Object.keys(data).length > 0) {
             const stockInfo = {
                 ticker: data["01. symbol"],
                 price: parseFloat(data["05. price"]),
@@ -141,68 +69,55 @@ async function getStockData(ticker) {
                 change: parseFloat(data["09. change"]),
                 change_percent: parseFloat(data["10. change percent"])
             };
-            logger.info(`[Stock API] Fetched live data for ${stockInfo.ticker}: Price ${stockInfo.price}`);
-            return {
-                stock_data: stockInfo,
-                text: `Here's the latest data for ${stockInfo.ticker} as of ${stockInfo.latest_trading_day}:\n` +
-                      `Price: $${stockInfo.price.toFixed(2)}\n` +
-                      `Change: $${stockInfo.change.toFixed(2)} (${stockInfo.change_percent.toFixed(2)}%)`
-            };
+            console.log(`[Stock API] Fetched data for ${stockInfo.ticker}: Price ${stockInfo.price}`);
+            return { stock_data: stockInfo };
         } else {
-            logger.warn(`[Stock API] No live data found for ticker: "${ticker}". Response:`, response.data);
-            if (response.data["Error Message"]) {
-                return { error: `Alpha Vantage Error for "${ticker}": ${response.data["Error Message"]}`, text: `I couldn't get live data for "${ticker}". Alpha Vantage said: "${response.data["Error Message"]}"` };
-            }
-            return { error: `No live stock data found for "${ticker}".`, text: `I couldn't find live stock data for "${ticker}". It might be an invalid ticker.` };
+            console.warn(`[Stock API] No data found for ticker: ${ticker}. Response:`, response.data);
+            return { error: `No stock data found for ${ticker}. It might be an invalid ticker or a rate limit issue.` };
         }
     } catch (error) {
-        logger.error(`[Stock API] Error fetching live stock data for "${ticker}":`, error.message);
-        return { error: 'Failed to fetch stock data.', text: `I encountered an issue fetching live stock data for "${ticker}".` };
+        console.error('[Stock API] Error fetching stock data:', error.message);
+        return { error: 'Failed to fetch stock data.' };
     }
 }
 
 async function getBursaAnnouncements(symbol) {
-    logger.info(`[Mock API] Fetching Bursa announcements for: "${symbol}"`);
+    console.log(`[Mock API] Fetching Bursa announcements for: ${symbol}`);
     const mockAnnouncements = [
         {
             date: "2025-06-14",
-            stock_code: symbol.toUpperCase(),
-            company_name: `${symbol.toUpperCase()} BERHAD`,
+            stock_code: symbol,
+            company_name: "TENAGA NASIONAL BHD",
             category: "General Announcement",
-            title: `Proposed Solar Farm Expansion by ${symbol.toUpperCase()}`,
-            details: `${symbol.toUpperCase()} (Mock Bhd) has announced plans to invest heavily in a new 50MW solar farm in Kedah, aiming to boost renewable energy capacity. This is part of the national green energy initiative.`,
+            title: `Proposed Solar Farm Expansion by ${symbol}`,
+            details: `${symbol} (Tenaga Nasional Bhd) has announced plans to invest heavily in a new 50MW solar farm in Kedah, aiming to boost renewable energy capacity. This is part of the national green energy initiative.`,
             source: "Bursa Malaysia Mock Data"
         },
         {
             date: "2025-06-12",
-            stock_code: symbol.toUpperCase(),
-            company_name: `${symbol.toUpperCase()} BERHAD`,
+            stock_code: symbol,
+            company_name: "TENAGA NASIONAL BHD",
             category: "Financial Results",
-            title: `Q1 2025 Earnings Report for ${symbol.toUpperCase()}`,
-            details: `${symbol.toUpperCase()} reported a 10% increase in net profit for Q1 2025, driven by strong electricity demand from industrial sectors. Revenue stood at RM 12.5 billion.`,
+            title: `Q1 2025 Earnings Report for ${symbol}`,
+            details: `${symbol} reported a 10% increase in net profit for Q1 2025, driven by strong electricity demand from industrial sectors. Revenue stood at RM 12.5 billion.`,
             source: "Bursa Malaysia Mock Data"
         },
         {
             date: "2025-06-11",
-            stock_code: symbol.toUpperCase(),
-            company_name: `${symbol.toUpperCase()} BERHAD`,
+            stock_code: symbol,
+            company_name: "TENAGA NASIONAL BHD",
             category: "Corporate Action",
-            title: `Dividend Declaration by ${symbol.toUpperCase()}`,
-            details: `${symbol.toUpperCase()} has declared a first interim dividend of 18 sen per share for the financial year ending December 31, 2025, payable on July 15, 2025.`,
+            title: `Dividend Declaration by ${symbol}`,
+            details: `${symbol} has declared a first interim dividend of 18 sen per share for the financial year ending December 31, 2025, payable on July 15, 2025.`,
             source: "Bursa Malaysia Mock Data"
         }
     ];
-    logger.info(`[Mock API] Provided ${mockAnnouncements.length} mock Bursa announcements for "${symbol}".`);
-    return {
-        announcements: mockAnnouncements,
-        text: `Here are some recent mock announcements for ${symbol.toUpperCase()}:\n\n` +
-              mockAnnouncements.map(a => `- ${a.title} (${a.date})`).join('\n') +
-              `\n\n(This is mock data for demonstration purposes as no live Bursa API is integrated.)`
-    };
+    console.log(`[Mock API] Provided ${mockAnnouncements.length} mock Bursa announcements.`);
+    return { announcements: mockAnnouncements };
 }
 
 async function analyzeSocialSentiment(keyword) {
-    logger.info(`[Mock API] Analyzing social sentiment for: "${keyword}"`);
+    console.log(`[Mock API] Analyzing social sentiment for: ${keyword}`);
     const mockSentiment = {
         keyword: keyword,
         positive_mentions: 75,
@@ -212,251 +127,44 @@ async function analyzeSocialSentiment(keyword) {
         top_themes: ["expansion plans", "market confidence", "regulatory outlook"],
         source: "Mock Social Media Analytics"
     };
-    logger.info(`[Mock API] Provided mock social sentiment for "${keyword}": ${mockSentiment.overall_sentiment}`);
-    return {
-        sentiment_data: mockSentiment,
-        text: `Based on mock social media analytics for "${keyword}", the overall sentiment is ${mockSentiment.overall_sentiment}. ` +
-              `There were ${mockSentiment.positive_mentions} positive, ${mockSentiment.negative_mentions} negative, and ${mockSentiment.neutral_mentions} neutral mentions. ` +
-              `Top themes include: ${mockSentiment.top_themes.join(', ')}. ` +
-              `(This is mock data for demonstration purposes.)`
+    console.log(`[Mock API] Provided mock social sentiment for ${keyword}: ${mockSentiment.overall_sentiment}`);
+    return { sentiment_data: mockSentiment };
+}
+
+async function getEconomicData(indicator) {
+    console.log(`[Mock API] Fetching economic data for: ${indicator}`);
+    const mockEconomicData = {
+        inflation_rate: {
+            date: "May 2025",
+            value: "2.8%",
+            source: "Department of Statistics Malaysia Mock"
+        },
+        gdp_growth: {
+            date: "Q1 2025",
+            value: "4.5%",
+            source: "Bank Negara Malaysia Mock"
+        },
+        interest_rate: {
+            date: "June 2025",
+            value: "3.00%",
+            source: "Bank Negara Malaysia Mock"
+        }
     };
-}
 
-async function getEconomicIndicatorData(indicatorCode, countryCode = 'united states', startDate, endDate) {
-    const cacheKey = `economic_${indicatorCode}_${countryCode}_${startDate || 'all'}_${endDate || 'all'}`;
-    const cachedData = cache.get(cacheKey);
-
-    if (cachedData) {
-        logger.info(`[Cache] Hit for ${cacheKey}`);
-        if (!cachedData.text) {
-             cachedData.text = `Here's the cached historical data for ${cachedData.indicator || indicatorCode} in ${cachedData.country || countryCode}. You can now plot this data on a graph.`;
-        }
-        return cachedData;
+    if (indicator in mockEconomicData) {
+        console.log(`[Mock API] Provided mock economic data for ${indicator}.`);
+        return { economic_data: mockEconomicData[indicator] };
+    } else {
+        console.warn(`[Mock API] No mock economic data for indicator: ${indicator}`);
+        return { error: `No mock economic data found for ${indicator}.` };
     }
-
-    const TRADING_ECONOMICS_API_KEY = process.env.TRADING_ECONOMICS_API_KEY;
-    if (!TRADING_ECONOMICS_API_KEY) {
-        logger.error('[Economic API] TRADING_ECONOMICS_API_KEY is not set.');
-        return { error: 'Trading Economics API key not found.', text: 'I cannot fetch economic data as the API key is not configured.' };
-    }
-
-    let endpoint;
-    const countryName = countryCode.toLowerCase();
-
-    switch(indicatorCode.toLowerCase()) {
-        case 'cpi':
-            endpoint = 'consumer price index';
-            break;
-        case 'ppi':
-            endpoint = 'producer price index';
-            break;
-        case 'fomc':
-        case 'interest_rate':
-            endpoint = 'interest rate';
-            countryCode = (indicatorCode.toLowerCase() === 'fomc' || countryName === 'united states') ? 'united states' : countryName;
-            break;
-        case 'gdp':
-            endpoint = 'gdp growth rate';
-            break;
-        default:
-            return { error: `Unsupported economic indicator: "${indicatorCode}"`, text: `I can only fetch data for 'CPI', 'PPI', 'FOMC' (for US interest rates), 'interest_rate', or 'GDP'.` };
-    }
-
-    let url = `https://api.tradingeconomics.com/historical/country/${encodeURIComponent(countryCode)}/indicator/${encodeURIComponent(endpoint)}?c=${TRADING_ECONOMICS_API_KEY}`;
-    if (startDate && endDate) {
-        url += `&d1=${startDate}&d2=${endDate}`;
-    }
-
-    logger.info(`[Economic API] Fetching economic data for "${indicatorCode}" in "${countryCode}" from Trading Economics.`);
-
-    try {
-        const response = await axios.get(url);
-        const data = response.data;
-
-        if (data && data.length > 0) {
-            const chartData = data
-                .filter(item => {
-                    const itemDate = new Date(item.Date);
-                    const start = startDate ? new Date(startDate) : null;
-                    const end = endDate ? new Date(endDate) : null;
-                    return (!start || itemDate >= start) && (!end || itemDate <= end);
-                })
-                .map(item => ({
-                    date: item.Date.split('T')[0],
-                    value: item.Value,
-                    category: item.Category,
-                    unit: item.Unit,
-                    country: item.Country,
-                    title: item.Indicator
-                }))
-                .sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime());
-
-            const result = {
-                indicator: indicatorCode,
-                country: countryCode,
-                historical_economic_data: chartData,
-                source: "Trading Economics",
-                text: `Here's the historical data for the ${chartData[0]?.title || indicatorCode} in ${chartData[0]?.country || countryCode}. You can now plot this data on a graph.`
-            };
-
-            cache.set(cacheKey, result);
-            logger.info(`[Economic API] Fetched ${chartData.length} data points for ${indicatorCode}. Cached.`);
-            return result;
-        } else {
-            logger.warn(`[Economic API] No historical data found for ${indicatorCode} (${countryCode}). Response:`, response.data);
-            return { error: `No historical economic data found for "${indicatorCode}" in "${countryCode}".`, text: `I couldn't find historical economic data for "${indicatorCode}" in "${countryCode}". It might be an invalid indicator or country, or data is not available.` };
-        }
-    } catch (error) {
-        logger.error(`[Economic API] Error fetching ${indicatorCode}:`, error.response ? (error.response.data || error.response.statusText) : error.message);
-        let errorMessage = `Failed to fetch economic data for "${indicatorCode}".`;
-        if (error.response && error.response.status === 401) {
-            errorMessage = `Authentication failed for Trading Economics API. Check your API key.`;
-        } else if (error.response && error.response.status === 429) {
-            errorMessage = `Trading Economics API rate limit exceeded. Please try again later.`;
-        }
-        return { error: errorMessage, text: `I encountered an issue fetching economic data for "${indicatorCode}": ${errorMessage}` };
-    }
-}
-
-async function getHistoricalStockData(ticker, period = 'daily') { // 'daily', 'weekly', 'monthly'
-    const ALPHA_VANTAGE_API_KEY = process.env.ALPHA_VANTAGE_API_KEY;
-    if (!ALPHA_VANTAGE_API_KEY) {
-        logger.error('[Stock API] ALPHA_VANTAGE_API_KEY is not set.');
-        return { error: 'Alpha Vantage API key not found.', text: 'I cannot fetch historical stock data as the API key is not configured.' };
-    }
-
-    let functionName;
-    let timeSeriesKey;
-    let actualTicker = ticker.toUpperCase();
-
-    switch (actualTicker) {
-        case 'NASDAQ':
-        case '^IXIC':
-        case 'NASDAQ 100':
-        case 'COMPQ':
-            actualTicker = 'QQQ';
-            break;
-        case 'S&P 500':
-        case 'SP500':
-        case '^GSPC':
-            actualTicker = 'SPY';
-            break;
-        case 'DOW JONES':
-        case 'DOW':
-        case '^DJI':
-            actualTicker = 'DIA';
-            break;
-        default:
-            break;
-    }
-
-    switch (period) {
-        case 'daily':
-            functionName = "TIME_SERIES_DAILY_ADJUSTED";
-            timeSeriesKey = "Time Series (Daily)";
-            break;
-        case 'weekly':
-            functionName = "TIME_SERIES_WEEKLY_ADJUSTED";
-            timeSeriesKey = "Weekly Adjusted Time Series";
-            break;
-        case 'monthly':
-            functionName = "TIME_SERIES_MONTHLY_ADJUSTED";
-            timeSeriesKey = "Monthly Adjusted Time Series";
-            break;
-        default:
-            return { error: "Invalid period specified for historical stock data. Choose 'daily', 'weekly', or 'monthly'.", text: "I can only retrieve daily, weekly, or monthly historical data." };
-    }
-
-    const url = `https://www.alphavantage.co/query?function=${functionName}&symbol=${encodeURIComponent(actualTicker)}&apikey=${ALPHA_VANTAGE_API_KEY}&outputsize=full`;
-    logger.info(`[Stock API] Fetching ${period} historical data for: "${actualTicker}"`);
-
-    try {
-        const response = await axios.get(url);
-        const data = response.data[timeSeriesKey];
-
-        if (data && Object.keys(data).length > 0 && typeof data !== 'string') {
-            const historicalData = Object.entries(data).map(([date, values]) => ({
-                date: date,
-                open: parseFloat(values["1. open"]),
-                high: parseFloat(values["2. high"]),
-                low: parseFloat(values["3. low"]),
-                close: parseFloat(values["4. close"]),
-                adjustedClose: parseFloat(values["5. adjusted close"] || values["4. close"]),
-                volume: parseInt(values["6. volume"])
-            })).sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime());
-
-            logger.info(`[Stock API] Fetched ${historicalData.length} historical data points for "${actualTicker}".`);
-            return {
-                ticker: actualTicker,
-                historical_data: historicalData,
-                source: "Alpha Vantage",
-                text: `Here's the ${period} historical data for ${actualTicker}. You can use this to plot a chart showing its price trends.`
-            };
-        } else {
-            logger.warn(`[Stock API] No historical ${period} data found for ticker: "${actualTicker}". Response:`, response.data);
-            if (response.data["Error Message"]) {
-                return { error: `Alpha Vantage Error for "${actualTicker}": ${response.data["Error Message"]}`, text: `I couldn't get historical data for "${actualTicker}". Alpha Vantage said: "${response.data["Error Message"]}"` };
-            }
-            return { error: `No historical ${period} data found for "${actualTicker}".`, text: `I couldn't find historical ${period} data for "${actualTicker}". It might be an invalid ticker or a rate limit issue.` };
-        }
-    } catch (error) {
-        logger.error(`[Stock API] Error fetching ${period} historical data for "${actualTicker}":`, error.message);
-        let errorMessage = `Failed to fetch ${period} historical data for "${actualTicker}".`;
-        if (error.response && error.response.status === 401) {
-            errorMessage = `Authentication failed for Alpha Vantage API. Check your API key.`;
-        } else if (error.response && error.response.status === 429) {
-            errorMessage = `Alpha Vantage API rate limit exceeded. Please try again later.`;
-        }
-        return { error: errorMessage, text: `I encountered an issue fetching historical stock data for "${actualTicker}": ${errorMessage}` };
-    }
-}
-
-
-async function getBursaHistoricalData(symbol, period = 'daily') {
-    logger.info(`[Mock API] Fetching Bursa historical data for: "${symbol}", period: "${period}"`);
-    const today = new Date();
-    const historicalData = [];
-    for (let i = 0; i < 30; i++) {
-        const date = new Date(today);
-        if (period === 'daily') {
-            date.setDate(today.getDate() - i);
-        } else if (period === 'weekly') {
-            date.setDate(today.getDate() - (i * 7));
-        } else if (period === 'monthly') {
-            date.setMonth(today.getMonth() - i);
-        }
-
-        const basePrice = 5.0 + Math.sin(i / 5) * 0.5 + Math.cos(i / 10) * 0.3;
-        const open = parseFloat((basePrice + (Math.random() - 0.5) * 0.1).toFixed(2));
-        const close = parseFloat((basePrice + (Math.random() - 0.5) * 0.1).toFixed(2));
-        const high = Math.max(open, close, parseFloat((basePrice + Math.random() * 0.2).toFixed(2)));
-        const low = Math.min(open, close, parseFloat((basePrice - Math.random() * 0.2).toFixed(2)));
-        const volume = Math.floor(1000000 + Math.random() * 500000);
-
-        historicalData.unshift({
-            date: date.toISOString().split('T')[0],
-            open,
-            high,
-            low,
-            close,
-            adjustedClose: close,
-            volume
-        });
-    }
-    logger.info(`[Mock API] Provided ${historicalData.length} mock Bursa historical data points for "${symbol}".`);
-    return {
-        ticker: symbol,
-        historical_data: historicalData,
-        source: "Bursa Malaysia Mock Data",
-        text: `Here's the mock ${period} historical data for ${symbol}. You can use this to plot a chart showing its price trends. (This is mock data)`
-    };
 }
 
 async function generateImage(prompt) {
     const STABILITY_AI_API_KEY = process.env.STABILITY_AI_API_KEY;
     if (!STABILITY_AI_API_KEY) {
-        logger.error("[Stability AI] STABILITY_AI_API_KEY is not set.");
-        return { error: "Stability AI API key not found.", text: "I cannot generate an image as the API key is not configured." };
+        console.error("[Stability AI] API key not set.");
+        return { error: "Stability AI API key not found." };
     }
 
     const url = "https://api.stability.ai/v1/generation/stable-diffusion-xl-1024-v1-0/text-to-image";
@@ -475,37 +183,29 @@ async function generateImage(prompt) {
         text_prompts: [{ text: prompt, weight: 1 }],
     };
 
-    logger.info(`[Stability AI] Generating image for prompt: "${prompt.substring(0, 50)}..."`);
+    console.log(`[Stability AI] Generating image for prompt: "${prompt.substring(0, 50)}..."`);
 
     try {
         const response = await axios.post(url, body, { headers });
         if (response.data.artifacts && response.data.artifacts.length > 0) {
             const base64Image = response.data.artifacts[0].base64;
             const imageUrl = `data:image/png;base64,${base64Image}`;
-            logger.info("[Stability AI] Image generated successfully.");
-            return { imageUrl: imageUrl, text: "Here is the AI-generated image based on your request. I hope this visual insight is helpful!" };
+            console.log("[Stability AI] Image generated successfully.");
+            return { imageUrl: imageUrl };
         } else {
-            logger.warn("[Stability AI] No image artifacts found in response:", response.data);
-            return { error: "No image artifacts found in generation response.", text: "I tried to generate an image, but the service did not return any image data." };
+            console.error("[Stability AI] No image artifacts found in response:", response.data);
+            return { error: "Failed to generate image." };
         }
     } catch (error) {
-        logger.error('[Stability AI] Error generating image:', error.response ? error.response.data : error.message);
-        let errorMessage = "Failed to generate image.";
-        if (error.response && error.response.status === 400) {
-            errorMessage = `Stability AI API error: ${JSON.stringify(error.response.data)}. This might be due to an invalid or inappropriate prompt.`;
-        } else if (error.response && error.response.status === 401) {
-            errorMessage = `Authentication failed for Stability AI. Check your API key.`;
-        } else if (error.response && error.response.status === 429) {
-            errorMessage = `Stability AI API rate limit exceeded. Please try again later.`;
-        }
-        return { error: errorMessage, text: `I encountered an issue generating the image: ${errorMessage}` };
+        console.error('[Stability AI] Error generating image:', error.response ? error.response.data : error.message);
+        return { error: "Failed to generate image." };
     }
 }
 
 async function generateAudio(text, voiceId = "FGY2WhTYpPnrIDTdsKH5") { // Default voice ID for a clear voice
     const ELEVENLABS_API_KEY = process.env.ELEVENLABS_API_KEY;
     if (!ELEVENLABS_API_KEY) {
-        logger.error("[ElevenLabs] ELEVENLABS_API_KEY is not set.");
+        console.error("[ElevenLabs] API key not set.");
         return { error: "ElevenLabs API key not found." };
     }
 
@@ -524,95 +224,281 @@ async function generateAudio(text, voiceId = "FGY2WhTYpPnrIDTdsKH5") { // Defaul
         }
     };
 
-    logger.info(`[ElevenLabs] Generating audio for text: "${text.substring(0, 50)}..."`);
+    console.log(`[ElevenLabs] Generating audio for text: "${text.substring(0, 50)}..."`);
 
     try {
         const response = await axios.post(url, body, { headers, responseType: 'arraybuffer' });
         const base64Audio = Buffer.from(response.data).toString('base64');
         const audioUrl = `data:audio/mpeg;base64,${base64Audio}`;
-        logger.info("[ElevenLabs] Audio generated successfully.");
+        console.log("[ElevenLabs] Audio generated successfully.");
         return { audioUrl: audioUrl };
     } catch (error) {
-        logger.error('[ElevenLabs] Error generating audio:', error.response ? error.response.data.toString('utf8') : error.message);
-        let errorMessage = "Failed to generate audio.";
-        if (error.response && error.response.data && typeof error.response.data === 'object' && error.response.data.detail) {
-            errorMessage = `ElevenLabs API Error: ${error.response.data.detail.message || JSON.stringify(error.response.data.detail)}`;
-        } else if (error.message.includes('401')) {
-            errorMessage = `Authentication failed for ElevenLabs. Check your API key.`;
-        } else if (error.message.includes('429')) {
-            errorMessage = `ElevenLabs API rate limit exceeded.`;
-        }
-        return { error: errorMessage };
+        console.error('[ElevenLabs] Error generating audio:', error.response ? error.response.data.toString('utf8') : error.message);
+        return { error: "Failed to generate audio." };
     }
 }
 
+async function getEconomicIndicatorData(indicatorCode, countryCode = 'united states') {
+    const TRADING_ECONOMICS_API_KEY = process.env.TRADING_ECONOMICS_API_KEY;
+    if (!TRADING_ECONOMICS_API_KEY) {
+        console.error("[Trading Economics API] API key not set.");
+        return { error: "Trading Economics API key not found." };
+    }
+
+    let endpoint;
+    // Map common indicator names to Trading Economics API paths/codes
+    switch(indicatorCode.toLowerCase()) {
+        case 'cpi':
+            endpoint = 'consumer price index';
+            break;
+        case 'ppi':
+            endpoint = 'producer price index';
+            break;
+        case 'fomc':
+            // FOMC is specific to US interest rates. If 'fomc' is queried,
+            // we'll fetch US interest rates data.
+            endpoint = 'interest rate';
+            countryCode = 'united states'; // Force US for FOMC context
+            break;
+        case 'interest_rate': // Added direct for general interest rate query
+            endpoint = 'interest rate';
+            break;
+        case 'gdp':
+            endpoint = 'gdp growth rate';
+            break;
+        // Add more mappings as you discover needed indicators from Trading Economics
+        default:
+            return { error: `Unsupported economic indicator: ${indicatorCode}. Please specify 'CPI', 'PPI', 'FOMC', 'interest_rate', or 'GDP'.` };
+    }
+
+    const url = `https://api.tradingeconomics.com/historical/country/${encodeURIComponent(countryCode)}/indicator/${encodeURIComponent(endpoint)}?c=${TRADING_ECONOMICS_API_KEY}`;
+    console.log(`[Economic API] Fetching economic data for ${indicatorCode} (${countryCode})`);
+
+    try {
+        const response = await axios.get(url);
+        const data = response.data; // Trading Economics returns an array of objects
+
+        if (data && data.length > 0) {
+            const chartData = data.map(item => ({
+                date: item.Date.split('T')[0], // Extract just the date part
+                value: item.Value,
+                // Include other relevant fields if needed for frontend display or Gemini's analysis
+                category: item.Category,
+                unit: item.Unit,
+                country: item.Country,
+                title: item.Indicator // Use Indicator as title
+            })).sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime()); // Ensure chronological order
+
+            console.log(`[Economic API] Fetched ${chartData.length} data points for ${indicatorCode}.`);
+            return {
+                indicator: indicatorCode,
+                country: countryCode,
+                historical_economic_data: chartData,
+                source: "Trading Economics"
+            };
+        } else {
+            console.warn(`[Economic API] No historical data found for ${indicatorCode} (${countryCode}). Response:`, response.data);
+            return { error: `No historical economic data found for ${indicatorCode} in ${countryCode}. It might be an invalid indicator/country or a rate limit issue.` };
+        }
+    } catch (error) {
+        console.error(`[Economic API] Error fetching economic data for ${indicatorCode}:`, error.response ? (error.response.data || error.response.statusText) : error.message);
+        return { error: `Failed to fetch economic data for ${indicatorCode}.` };
+    }
+}
+
+
+async function getHistoricalStockData(ticker, period = 'daily') { // 'daily', 'weekly', 'monthly'
+    const ALPHA_VANTAGE_API_KEY = process.env.ALPHA_VANTAGE_API_KEY;
+    if (!ALPHA_VANTAGE_API_KEY) {
+        console.error("[Alpha Vantage API] API key not set.");
+        return { error: "Alpha Vantage API key not found." };
+    }
+
+    let functionName;
+    let timeSeriesKey;
+
+    // --- NEW MAPPING LOGIC FOR COMMON INDEXES ---
+    let actualTicker = ticker.toUpperCase(); // Start with the passed ticker
+    switch (actualTicker) {
+        case 'NASDAQ':
+        case '^IXIC': // If Gemini decides to pass ^IXIC
+        case 'NASDAQ 100':
+        case 'COMPQ': // Another common NASDAQ Composite symbol
+            actualTicker = 'QQQ'; // Use NASDAQ 100 ETF as it's typically reliable on Alpha Vantage
+            break;
+        case 'S&P 500':
+        case 'SP500':
+        case '^GSPC': // If Gemini decides to pass ^GSPC
+            actualTicker = 'SPY'; // Use S&P 500 ETF
+            break;
+        case 'DOW JONES':
+        case 'DOW':
+        case '^DJI': // If Gemini decides to pass ^DJI
+            actualTicker = 'DIA'; // Use Dow Jones ETF
+            break;
+        // Add other specific mappings if needed (e.g., specific company aliases)
+        default:
+            // No change needed for standard tickers like AAPL, MSFT
+            break;
+    }
+    // --- END NEW MAPPING LOGIC ---
+
+    switch (period) {
+        case 'daily':
+            functionName = "TIME_SERIES_DAILY_ADJUSTED"; // Includes adjusted close for better accuracy
+            timeSeriesKey = "Time Series (Daily)";
+            break;
+        case 'weekly':
+            functionName = "TIME_SERIES_WEEKLY_ADJUSTED";
+            timeSeriesKey = "Weekly Adjusted Time Series";
+            break;
+        case 'monthly':
+            functionName = "TIME_SERIES_MONTHLY_ADJUSTED";
+            timeSeriesKey = "Monthly Adjusted Time Series";
+            break;
+        default:
+            return { error: "Invalid period specified for historical stock data. Choose 'daily', 'weekly', or 'monthly'." };
+    }
+
+    const url = `https://www.alphavantage.co/query?function=${functionName}&symbol=${encodeURIComponent(actualTicker)}&apikey=${ALPHA_VANTAGE_API_KEY}&outputsize=full`; // Use actualTicker
+    console.log(`[Stock API] Fetching ${period} historical data for: ${actualTicker}`); // Log the actual ticker being used
+
+    try {
+        const response = await axios.get(url);
+        const data = response.data[timeSeriesKey] || response.data; // Fallback for different time series keys
+
+        if (data && Object.keys(data).length > 0 && typeof data !== 'string') { // Ensure data is an object, not an error message
+            const historicalData = Object.entries(data).map(([date, values]) => ({
+                date: date,
+                // Alpha Vantage for TIME_SERIES_DAILY uses "1. open", etc.
+                // Adjusted series will have "5. adjusted close"
+                open: parseFloat(values["1. open"]),
+                high: parseFloat(values["2. high"]),
+                low: parseFloat(values["3. low"]),
+                close: parseFloat(values["4. close"]),
+                adjustedClose: parseFloat(values["5. adjusted close"] || values["4. close"]), // Use adjusted or fall back to close
+                volume: parseInt(values["6. volume"])
+            })).sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime()); // Ensure correct chronological sorting
+
+            console.log(`[Stock API] Fetched ${historicalData.length} historical data points for ${actualTicker}.`);
+            // Pass the actualTicker so the frontend can use it for chart title
+            return { ticker: actualTicker, historical_data: historicalData, source: "Alpha Vantage" };
+        } else {
+            console.warn(`[Stock API] No historical ${period} data found for ticker: ${actualTicker}. Response:`, response.data);
+            // Provide more specific error if Alpha Vantage returns error message
+            if (response.data["Error Message"]) {
+                return { error: `Alpha Vantage Error for ${actualTicker}: ${response.data["Error Message"]}` };
+            }
+            return { error: `No historical ${period} data found for ${actualTicker}. It might be an invalid ticker, or a rate limit issue, or data is not available.` };
+        }
+    } catch (error) {
+        console.error(`[Stock API] Error fetching ${period} historical data for ${actualTicker}:`, error.message);
+        return { error: `Failed to fetch ${period} historical data for ${actualTicker}.` };
+    }
+}
+
+
+async function getBursaHistoricalData(symbol, period = 'daily') {
+    console.log(`[Mock API] Fetching Bursa historical data for: ${symbol}, period: ${period}`);
+    // Generate mock historical data for demonstration
+    const today = new Date();
+    const historicalData = [];
+    for (let i = 0; i < 30; i++) { // Last 30 days/weeks/months
+        const date = new Date(today);
+        if (period === 'daily') {
+            date.setDate(today.getDate() - i);
+        } else if (period === 'weekly') {
+            date.setDate(today.getDate() - (i * 7));
+        } else if (period === 'monthly') {
+            date.setMonth(today.getMonth() - i);
+        }
+
+        // Simple mock price fluctuation
+        const basePrice = 5.0 + Math.sin(i / 5) * 0.5 + Math.cos(i / 10) * 0.3;
+        const open = parseFloat((basePrice + (Math.random() - 0.5) * 0.1).toFixed(2));
+        const close = parseFloat((basePrice + (Math.random() - 0.5) * 0.1).toFixed(2));
+        const high = Math.max(open, close, parseFloat((basePrice + Math.random() * 0.2).toFixed(2)));
+        const low = Math.min(open, close, parseFloat((basePrice - Math.random() * 0.2).toFixed(2)));
+        const volume = Math.floor(1000000 + Math.random() * 500000);
+
+        historicalData.unshift({ // Add to beginning to keep chronological order
+            date: date.toISOString().split('T')[0],
+            open,
+            high,
+            low,
+            close,
+            adjustedClose: close, // For simplicity in mock
+            volume
+        });
+    }
+    console.log(`[Mock API] Provided ${historicalData.length} mock Bursa historical data points.`);
+    return { ticker: symbol, historical_data: historicalData, source: "Bursa Malaysia Mock Data" }; // Added ticker and source for frontend
+}
+
+// Multer setup for OCR
+const upload = multer({ storage: multer.memoryStorage() }); // Store image in memory as buffer
+
+// Add this helper function for OCR
 async function performOcr(imageData, contentType) {
     const OCR_SPACE_API_KEY = process.env.OCR_SPACE_API_KEY;
     if (!OCR_SPACE_API_KEY) {
-        logger.error("[OCR.space] OCR_SPACE_API_KEY is not set.");
+        console.error("[OCR.space] API key not set.");
         return { error: "OCR.space API key not found." };
     }
 
     const url = 'https://api.ocr.space/parse/image';
     try {
+        // Ensure the base64 string includes the data URL prefix
         const base64Prefix = `data:${contentType};base64,`;
         const base64Image = `${base64Prefix}${imageData.toString('base64')}`;
 
         const response = await axios.post(url, {
             base64Image: base64Image,
-            language: 'eng',
-            isOverlayRequired: true
+            language: 'eng', // Consider making this dynamic based on user or detected language
+            isOverlayRequired: true // To get word bounding boxes if needed, or false for just text
         }, {
             headers: {
                 'apikey': OCR_SPACE_API_KEY,
-                'Content-Type': 'application/json'
+                'Content-Type': 'application/json' // Important for base64 payload
             }
         });
 
         const parsedResults = response.data.ParsedResults;
         if (parsedResults && parsedResults.length > 0) {
             const extractedText = parsedResults.map(result => result.ParsedText).join('\n');
-            logger.info("[OCR] Text extracted successfully.");
+            console.log("[OCR] Text extracted successfully.");
             return { extractedText: extractedText };
         } else if (response.data.IsErroredOnProcessing) {
-            logger.error("[OCR.space] Error processing image:", response.data.ErrorMessage);
+            console.error("[OCR.space] Error processing image:", response.data.ErrorMessage);
             return { error: `OCR processing failed: ${response.data.ErrorMessage}` };
         } else {
-            logger.warn("[OCR.space] No text found in image or parsing failed:", response.data);
+            console.warn("[OCR.space] No text found in image or parsing failed:", response.data);
             return { error: "Could not extract text from image. No parsed results." };
         }
     } catch (error) {
-        logger.error('[OCR.space] Error performing OCR:', error.response ? (error.response.data || error.response.statusText) : error.message);
-        let errorMessage = "Failed to perform OCR.";
-        if (error.response && error.response.status === 401) {
-            errorMessage = `Authentication failed for OCR.space. Check your API key.`;
-        } else if (error.response && error.response.status === 429) {
-            errorMessage = `OCR.space API rate limit exceeded. Please try again later.`;
-        }
-        return { error: errorMessage };
+        console.error('[OCR.space] Error performing OCR:', error.response ? (error.response.data || error.response.statusText) : error.message);
+        return { error: "Failed to perform OCR. Please check the image and API key." };
     }
 }
 
 
 // --- API Routes ---
 
+// Test route for the backend
 app.get('/', (req, res) => {
-    logger.info('Test route accessed');
-    res.json({ message: 'Enhanced Node.js Backend is live!' });
+    res.json({ message: 'Node.js Backend is live and cookin!' });
 });
 
+
+// Our main /analyze endpoint
 app.post('/analyze', async (req, res) => {
-    const { error, value } = analyzeSchema.validate(req.body);
-    if (error) {
-        logger.warn(`Validation error for /analyze: ${error.details[0].message}`);
-        return res.status(400).json({ error: error.details[0].message });
+    const { query } = req.body;
+
+    if (!query) {
+        return res.status(400).json({ error: "Query is required." });
     }
 
-    const { query } = value;
-    logger.info(`[API - /analyze] Processing query: "${query}"`);
-
     try {
-        // --- Gemini Tool Definitions ---
         const tools = [
             {
                 function_declarations: [{
@@ -624,7 +510,7 @@ app.post('/analyze', async (req, res) => {
             {
                 function_declarations: [{
                     name: "get_stock_data",
-                    description: "Retrieves current stock data for a given US stock or ETF ticker symbol (e.g., AAPL for Apple, SPY for S&P 500 ETF).",
+                    description: "Retrieves current and historical stock data for a given US stock or ETF ticker symbol (e.g., AAPL for Apple, SPY for S&P 500 ETF).",
                     parameters: { type: "object", properties: { ticker: { type: "string", description: "The stock or ETF ticker symbol (e.g., MSFT, QQQ)." } }, required: ["ticker"] },
                 }],
             },
@@ -632,7 +518,7 @@ app.post('/analyze', async (req, res) => {
                 function_declarations: [{
                     name: "get_bursa_announcements",
                     description: "Fetches recent official announcements and disclosures from Bursa Malaysia for a given stock symbol. Returns mock data for demonstration.",
-                    parameters: { type: "object", properties: { symbol: { type: "string", description: "The Bursa Malaysia stock symbol (e.g., TNB)." } }, required: ["symbol"] },
+                    parameters: { type: "object", properties: { symbol: { type: "string", description: "The Bursa Malaysia stock symbol (e.g., TNB, PETRONAS)." } }, required: ["symbol"] },
                 }],
             },
             {
@@ -644,19 +530,11 @@ app.post('/analyze', async (req, res) => {
             },
             {
                 function_declarations: [{
-                    name: "get_economic_indicator_data",
-                    description: "Retrieves historical data for key economic indicators like CPI (Consumer Price Index), PPI (Producer Price Index), or interest rates (often influenced by FOMC). Useful for charting macroeconomic trends. Specify the indicator code and optionally the country (defaults to 'united states').",
-                    parameters: {
-                        type: "object",
-                        properties: {
-                            indicatorCode: { type: "string", description: "The code or common name for the economic indicator (e.g., 'CPI', 'PPI', 'FOMC' for interest rates, 'GDP')." },
-                            countryCode: { type: "string", description: "The country for which to fetch the economic data (e.g., 'united states', 'malaysia'). Defaults to 'united states'." },
-                            startDate: { type: "string", format: "date-time", description: "Start date in ISO 8601 format (e.g., '2020-01-01'). Optional. Filters results." },
-                            endDate: { type: "string", format: "date-time", description: "End date in ISO 8601 format (e.g., '2023-12-31'). Optional. Filters results." }
-                        },
-                        required: ["indicatorCode"]
-                    },
+                    name: "get_economic_data",
+                    description: "Retrieves mock economic indicators from sources like Department of Statistics Malaysia or Bank Negara Malaysia.",
+                    parameters: { type: "object", properties: { indicator: { type: "string", description: "The economic indicator to fetch (e.g., 'inflation_rate', 'gdp_growth', 'interest_rate')." } }, required: ["indicator"] },
                 }],
+
             },
             {
                 function_declarations: [{
@@ -679,7 +557,7 @@ app.post('/analyze', async (req, res) => {
                     parameters: {
                         type: "object",
                         properties: {
-                            symbol: { type: "string", description: "The Bursa Malaysia stock symbol (e.g., TNB)." },
+                            symbol: { type: "string", description: "The Bursa Malaysia stock symbol (e.g., TNB, PETRONAS)." },
                             period: { type: "string", enum: ["daily", "weekly", "monthly"], description: "The time period for historical data (e.g., 'daily', 'weekly', 'monthly'). Defaults to 'daily'." }
                         },
                         required: ["symbol"]
@@ -688,8 +566,22 @@ app.post('/analyze', async (req, res) => {
             },
             {
                 function_declarations: [{
+                    name: "get_economic_indicator_data",
+                    description: "Retrieves historical data for key economic indicators like CPI (Consumer Price Index), PPI (Producer Price Index), or interest rates (often influenced by FOMC). Useful for charting macroeconomic trends. Specify the indicator code and optionally the country (defaults to 'united states').",
+                    parameters: {
+                        type: "object",
+                        properties: {
+                            indicatorCode: { type: "string", description: "The code or common name for the economic indicator (e.g., 'CPI', 'PPI', 'FOMC' for interest rates, 'GDP')." },
+                            countryCode: { type: "string", description: "The country for which to fetch the economic data (e.g., 'united states', 'malaysia'). Defaults to 'united states'." }
+                        },
+                        required: ["indicatorCode"]
+                    },
+                }],
+            },
+            { // NEW: Function to explicitly generate an image
+                function_declarations: [{
                     name: "generate_image_tool",
-                    description: "Generates an AI-powered infographic image based on a detailed prompt. Use this when the user explicitly asks for an 'image', 'picture', 'infographic', or 'visual representation' of market insights. The prompt for the image should be detailed and relevant to financial data, trends, or market context.",
+                    description: "Generates an AI-powered infographic image based on a provided detailed prompt. Use this when the user explicitly asks for an 'image', 'picture', 'infographic', or 'visual representation' of market insights. The prompt for the image should be detailed and relevant to financial data, trends, or market context.",
                     parameters: {
                         type: "object",
                         properties: {
@@ -705,208 +597,141 @@ app.post('/analyze', async (req, res) => {
         const result = await chat.sendMessage(query);
         const call = result.response.functionCall;
 
-        // --- DEBUGGING LOG for functionCall object ---
+        let functionResult = null;
+        let historicalStockData = null; // Renamed to clearly differentiate from economic data
+        let historicalEconomicData = null; // For economic indicators
+        let imageUrl = null; // Initialize imageUrl to null
+
         if (call) {
-            logger.info(`[DEBUG] Full Gemini functionCall object:`, JSON.stringify(call, null, 2));
-        } else {
-            logger.info(`[DEBUG] Gemini did not request a function call.`);
+            console.log('Gemini requested function call:', call);
+            if (call.name === 'fetch_news') {
+                functionResult = await fetchNews(call.args.keyword);
+            } else if (call.name === 'get_stock_data') {
+                functionResult = await getStockData(call.args.ticker);
+            } else if (call.name === 'get_bursa_announcements') {
+                functionResult = await getBursaAnnouncements(call.args.symbol);
+            } else if (call.name === 'analyze_social_sentiment') {
+                functionResult = await analyzeSocialSentiment(call.args.keyword);
+            } else if (call.name === 'get_economic_data') {
+                functionResult = await getEconomicData(call.args.indicator);
+            } else if (call.name === 'get_historical_stock_data') {
+                historicalStockData = await getHistoricalStockData(call.args.ticker, call.args.period);
+                functionResult = historicalStockData; // Pass the result to Gemini
+            } else if (call.name === 'get_bursa_historical_data') {
+                historicalStockData = await getBursaHistoricalData(call.args.symbol, call.args.period);
+                functionResult = historicalStockData; // Pass the result to Gemini
+            } else if (call.name === 'get_economic_indicator_data') {
+                historicalEconomicData = await getEconomicIndicatorData(call.args.indicatorCode, call.args.countryCode);
+                functionResult = historicalEconomicData; // Pass the result to Gemini
+            } else if (call.name === 'generate_image_tool') { // NEW: Handle image generation tool call
+                const imageGenerationPrompt = call.args.prompt;
+                const imageGenResult = await generateImage(imageGenerationPrompt);
+                imageUrl = imageGenResult.imageUrl; // Set imageUrl here
+                functionResult = imageGenResult; // Pass result (including potential error) to Gemini for final text
+            }
         }
-        // --- END DEBUGGING LOG ---
 
-        let toolResponse = null;
         let finalResponseText = '';
-        let imageUrl = null;
-        let historicalStockData = null;
-        let historicalEconomicData = null;
-        let articlesData = null; // For news articles
-
-        if (call) {
-            // --- NEW: Handle empty/invalid call.name before switch ---
-            if (!call.name || typeof call.name !== 'string' || call.name.trim() === '') {
-                logger.error(`[Gemini Error] Function call object has empty, missing, or invalid 'name' property. Full object:`, JSON.stringify(call, null, 2));
-                return res.status(500).json({
-                    error: "AI service returned an invalid function call (empty name). Please try again or rephrase your query.",
-                    details: "Gemini function call name was empty or malformed."
-                });
-            }
-            // --- END NEW CHECK ---
-
-            logger.info(`[Gemini] Requested function call: ${call.name} with args:`, call.args);
-
-            switch (call.name) {
-                case 'fetch_news':
-                    toolResponse = await fetchNews(call.args.keyword);
-                    if (toolResponse && toolResponse.articles) {
-                        articlesData = toolResponse.articles; // Store articles for frontend
-                    }
-                    break;
-                case 'get_stock_data':
-                    toolResponse = await getStockData(call.args.ticker);
-                    break;
-                case 'get_bursa_announcements':
-                    toolResponse = await getBursaAnnouncements(call.args.symbol);
-                    break;
-                case 'analyze_social_sentiment':
-                    toolResponse = await analyzeSocialSentiment(call.args.keyword);
-                    break;
-                case 'get_economic_indicator_data':
-                    toolResponse = await getEconomicIndicatorData(
-                        call.args.indicatorCode,
-                        call.args.countryCode,
-                        call.args.startDate,
-                        call.args.endDate
-                    );
-                    break;
-                case 'get_historical_stock_data':
-                    toolResponse = await getHistoricalStockData(call.args.ticker, call.args.period);
-                    break;
-                case 'get_bursa_historical_data':
-                    toolResponse = await getBursaHistoricalData(call.args.symbol, call.args.period);
-                    break;
-                case 'generate_image_tool':
-                    toolResponse = await generateImage(call.args.prompt);
-                    if (toolResponse && toolResponse.imageUrl) {
-                        imageUrl = toolResponse.imageUrl;
-                    }
-                    break;
-                default:
-                    logger.warn(`[Gemini] Unhandled function call: '${call.name}'. This tool might not be implemented in the backend's switch statement.`);
-                    return res.status(400).json({ error: `AI requested an unrecognized function: '${call.name}'. Please try again or rephrase.`, details: `Unhandled tool: ${call.name}` });
-            }
-
-            if (toolResponse && toolResponse.error) {
-                logger.error(`[Tool Execution Error] Function '${call.name}' failed: ${toolResponse.error}`);
-                const errorResponseForGemini = { error: toolResponse.error };
-                const responseWithFunctionError = await chat.sendMessage([
-                    {
-                        function_response: {
-                            name: call.name,
-                            response: errorResponseForGemini,
-                        },
-                    },
-                ]);
-                finalResponseText = responseWithFunctionError.response.text();
-                if (call.name === 'generate_image_tool') {
-                    imageUrl = null; // Clear image URL if generation failed
+        if (functionResult) {
+            // Check if functionResult itself indicates an error from the tool
+            if (functionResult.error) {
+                finalResponseText = `I'm sorry, I couldn't get the data. Reason: ${functionResult.error}`;
+                // If it was an image generation error, clear imageUrl
+                if (call && call.name === 'generate_image_tool') {
+                    imageUrl = null;
                 }
             } else {
                 const responseWithFunctionResult = await chat.sendMessage([
                     {
                         function_response: {
                             name: call.name,
-                            response: toolResponse,
+                            response: functionResult,
                         },
                     },
                 ]);
                 finalResponseText = responseWithFunctionResult.response.text();
-
-                if (toolResponse && toolResponse.historical_data) {
-                    historicalStockData = toolResponse.historical_data;
-                }
-                if (toolResponse && toolResponse.historical_economic_data) {
-                    historicalEconomicData = toolResponse.historical_economic_data;
-                }
             }
 
+            // Assign historical data if available in the function result
+            if (functionResult && functionResult.historical_data) {
+                historicalStockData = functionResult.historical_data;
+            }
+            if (functionResult && functionResult.historical_economic_data) {
+                historicalEconomicData = functionResult.historical_economic_data;
+            }
+
+            // If the image generation tool was called and successful, imageUrl is already set
+            // No need to re-assign it here unless you want to ensure it's picked up from functionResult
+            // if (call && call.name === 'generate_image_tool' && functionResult.imageUrl) {
+            //     imageUrl = functionResult.imageUrl;
+            // }
+
+
         } else {
-            logger.info('[Gemini] No specific tool invoked for query, generating direct text response.');
+            // If no function call was made by Gemini, just get the text response
             finalResponseText = result.response.text();
         }
 
-        let audioUrl = null;
-        if (finalResponseText) {
-            const audioResult = await generateAudio(finalResponseText);
-            if (audioResult && audioResult.audioUrl) {
-                audioUrl = audioResult.audioUrl;
-            } else {
-                logger.warn("[ElevenLabs] Could not generate audio:", audioResult?.error);
-            }
+        // REMOVED: Unconditional image generation. It's now handled by the 'generate_image_tool'
+        // let imageUrl = null;
+        // const imagePrompt = `Infographic summarizing stock market insights for "${query}". Financial data visualization, digital art, clean, clear, relevant to the Malaysian and US market context.`;
+        // const imageResult = await generateImage(imagePrompt);
+        // if (imageResult && imageResult.imageUrl) {
+        //     imageUrl = imageResult.imageUrl;
+        // } else {
+        //     console.warn("Could not generate image:", imageResult?.error);
+        // }
+
+        let audioUrl = null; // Audio generation remains unconditional
+        const audioResult = await generateAudio(finalResponseText);
+        if (audioResult && audioResult.audioUrl) {
+            audioUrl = audioResult.audioUrl;
+        } else {
+            console.warn("Could not generate audio:", audioResult?.error);
         }
 
-        logger.info('[API] Sending final response to frontend.');
         return res.json({
             summary: finalResponseText,
-            imageUrl: imageUrl,
+            imageUrl: imageUrl, // Will now only be present if 'generate_image_tool' was called
             audioUrl: audioUrl,
             historicalStockData: historicalStockData,
-            historicalEconomicData: historicalEconomicData,
-            articles: articlesData // Include news articles if fetched
+            historicalEconomicData: historicalEconomicData
         });
 
     } catch (error) {
-        logger.error('[API Error] Unhandled error during AI analysis:', error);
-        let userErrorMessage = "I'm sorry, I encountered a critical error processing your request. Please try again. If the problem persists, ensure the backend server is running correctly and check its logs.";
-
-        if (error.message && error.message.includes('functionCall') && !error.message.includes('response')) {
-             userErrorMessage = "I'm having trouble figuring out how to fulfill your request with my available tools. This might be a temporary issue or an unexpected query. Please try rephrasing.";
-        } else if (error.message && error.message.includes('API key')) {
-            userErrorMessage = "I'm experiencing an issue connecting to my AI service. Please check the backend API key configuration.";
-        } else if (error.response && error.response.status === 429) {
-            userErrorMessage = "My AI service is experiencing high demand. Please wait a moment and try again.";
-        } else if (error.message.includes('Request failed with status code')) {
-            userErrorMessage = `A service I rely on responded with an error (${error.message}). The data might be temporarily unavailable.`;
+        console.error('Error during AI analysis:', error);
+        let userErrorMessage = "I'm sorry, I couldn't process your request due to an internal error. Please try again. If the problem persists, check the backend logs.";
+        if (error.message && error.message.includes('functionCall')) {
+            userErrorMessage = "I'm having trouble executing a tool to fulfill your request. This might be a temporary issue or an unexpected query. Please try rephrasing.";
         }
-
         res.status(500).json({ error: userErrorMessage, details: error.message });
     }
 });
 
 
-// Dedicated endpoint for economic data requests (can be called directly by frontend if desired)
-app.post('/economic-data', async (req, res) => {
-    const { error, value } = economicDataQuerySchema.validate(req.body);
-    if (error) {
-        logger.warn(`Validation error for /economic-data: ${error.details[0].message}`);
-        return res.status(400).json({ error: error.details[0].message });
-    }
-
-    const { indicatorCode, countryCode, startDate, endDate } = value;
-    logger.info(`[API - /economic-data] Received request for ${indicatorCode} in ${countryCode}.`);
-
-    try {
-        const result = await getEconomicIndicatorData(indicatorCode, countryCode, startDate, endDate);
-
-        if (result.error) {
-            logger.error(`[API - /economic-data] Error fetching economic data: ${result.error}`);
-            return res.status(500).json({ error: result.error });
-        }
-        logger.info(`[API - /economic-data] Successfully fetched data for ${indicatorCode}.`);
-        return res.json(result);
-    } catch (err) {
-        logger.error(`[API - /economic-data] Unhandled error processing economic data request: ${err.message}`);
-        res.status(500).json({ error: 'Internal server error processing economic data.', details: err.message });
-    }
-});
-
-// OCR API Route
-const upload = multer({ storage: multer.memoryStorage() }); // Store image in memory as buffer
+// Add new API route for OCR
 app.post('/ocr', upload.single('image'), async (req, res) => {
-    logger.info('[API - /ocr] Received OCR request.');
     if (!req.file) {
-        logger.warn('[OCR] No image file uploaded.');
         return res.status(400).json({ error: "No image file uploaded." });
     }
     if (!req.file.buffer) {
-        logger.warn('[OCR] Uploaded file is not a buffer.');
-        return res.status(400).json({ error: "Uploaded file is not a valid buffer." });
+        return res.status(400).json({ error: "Uploaded file is not a buffer." });
     }
 
     try {
-        const ocrResult = await performOcr(req.file.buffer, req.file.mimetype);
+        const ocrResult = await performOcr(req.file.buffer, req.file.mimetype); // Pass content type
         if (ocrResult.error) {
-            logger.error('[OCR] Processing failed:', ocrResult.error);
             return res.status(500).json(ocrResult);
         }
-        logger.info('[OCR] Text extracted successfully.');
         return res.json(ocrResult);
     } catch (error) {
-        logger.error('[OCR] Unhandled error during OCR processing:', error);
-        res.status(500).json({ error: "Failed to process image for OCR due to an internal error.", details: error.message });
+        console.error('Error during OCR processing:', error);
+        res.status(500).json({ error: "Failed to process image for OCR.", details: error.message });
     }
 });
 
 
 // --- Server Listen ---
 app.listen(PORT, () => {
-    logger.info(`Node.js server listening on http://localhost:${PORT}`);
+    console.log(`Node.js server listening on http://localhost:${PORT}`);
 });
